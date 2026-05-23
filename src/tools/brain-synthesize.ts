@@ -1,10 +1,14 @@
 /**
- * brain_synthesize — Phase 0 synthesis worker.
+ * brain_synthesize — Phase 1 synthesis worker.
  *
- * Claims one item from the queue, reads its raw content, writes a stub
- * summary page under Wiki/summaries/, appends a synthesis log line, and
- * records Raw -> Wiki mapping in provenance.json. Phase 2 will replace
- * the stub body with real extraction + gate verdicts.
+ * Claims one item from the queue, reads its raw content, writes a summary
+ * page under Wiki/summaries/, fans out into entity pages under
+ * Wiki/entities/ (creating new pages or appending to existing ones),
+ * appends a synthesis log line, records the Raw -> Wiki mapping in
+ * provenance.json, and refreshes the graduated Wiki/_index.md.
+ *
+ * Phase 2 will replace the stub summary body and the pending reliability
+ * verdicts with a real extraction + gate pass.
  *
  * Failure handling: any error after a successful claim unclaims the item
  * so it stays in the pending queue for the next run.
@@ -27,6 +31,15 @@ import {
   type ProvenanceEntry,
 } from '../vault/provenance.js';
 import { indexWikiEntry } from '../vault/search.js';
+import {
+  extractEntities,
+  entityPaths,
+  readEntityPage,
+  createEntityPage,
+  appendToEntityPage,
+  buildContentSnippet,
+} from '../vault/entities.js';
+import { updateWikiIndex } from '../vault/wiki-index-md.js';
 import { nowISO } from '../shared/utils.js';
 import { logger } from '../shared/logger.js';
 import { formatError } from '../shared/errors.js';
@@ -37,9 +50,10 @@ export const brainSynthesizeToolDefinition = {
   name: 'brain_synthesize',
   description:
     'Process the next queued item from brain_learn. Reads the raw document, writes a summary ' +
-    'page to Wiki/summaries/, appends a line to Wiki/_log.md, and records the Raw -> Wiki ' +
-    'mapping in _index/provenance.json. Phase 0 writes a stub summary; full extraction lands ' +
-    'in Phase 2.',
+    'page to Wiki/summaries/, extracts entities and creates or appends to entity pages under ' +
+    'Wiki/entities/, refreshes the graduated Wiki/_index.md, appends a line to Wiki/_log.md, ' +
+    'and records the Raw -> Wiki mapping in _index/provenance.json. Reliability verdicts are ' +
+    'pending until Phase 2 implements the gate.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -128,28 +142,92 @@ export async function runBrainSynthesize(_input: z.infer<typeof BrainSynthesizeS
     });
     await writeAtomicFile(summaryAbs, page);
 
+    // Phase 1: extract entities from raw content, then create or append
+    // to entity pages under Wiki/entities/.
+    const entityNames = extractEntities(rawContent);
+    const entityPagePaths: string[] = [];
+    const entityNamesProcessed: string[] = [];
+
+    for (const name of entityNames) {
+      try {
+        const { absPath: entAbs, relPath: entRel } = entityPaths(name);
+        const snippet = buildContentSnippet(rawContent, name);
+        const existing = await readEntityPage(entAbs);
+
+        if (existing === null) {
+          await createEntityPage({
+            name,
+            absPath: entAbs,
+            sourceTitle: item.title,
+            rawPath: item.raw_path,
+            contentSnippet: snippet,
+            now: synthesizedAt,
+          });
+        } else {
+          await appendToEntityPage({
+            absPath: entAbs,
+            sourceTitle: item.title,
+            rawPath: item.raw_path,
+            contentSnippet: snippet,
+            now: synthesizedAt,
+          });
+        }
+
+        // Index the entity page so brain_recall picks it up without a full rebuild.
+        // Wiki index relPath is relative to Wiki/, not the vault root.
+        const wikiRelForIndex = path.posix.join(CONFIG.WIKI_ENTITIES, `${slugFromTitle(name)}.md`);
+        // Use the freshly written content if we have it, otherwise the snippet
+        // is a good-enough body for the index.
+        const indexedBody = snippet;
+        indexWikiEntry(wikiRelForIndex, name, 'entity', [], indexedBody, synthesizedAt, synthesizedAt);
+
+        entityPagePaths.push(entRel);
+        entityNamesProcessed.push(name);
+      } catch (entErr) {
+        // Don't fail the whole synthesis because one entity page broke.
+        // Log it and move on; the queue item is still useful with the summary.
+        logger.warn('Failed to process entity page', {
+          entity: name,
+          raw_path: item.raw_path,
+          error: String(entErr),
+        });
+      }
+    }
+
     // Append to Wiki/_log.md (append-only, serialized via lock)
     const logPath = path.join(CONFIG.VAULT_PATH, CONFIG.WIKI_FOLDER, CONFIG.WIKI_LOG_FILE);
+    const entitiesLine = entityNamesProcessed.length > 0
+      ? `- Entities: ${entityNamesProcessed.join(', ')}\n`
+      : `- Entities: (none extracted)\n`;
     const logLine =
       `\n## ${synthesizedAt} — ${item.title}\n` +
       `- Source: ${item.raw_path}\n` +
       `- Summary: ${summaryRel}\n` +
+      entitiesLine +
       `- Gate: pending (Phase 2 not yet implemented)\n`;
     await withFileLock(logPath, async () => {
       await fs.mkdir(path.dirname(logPath), { recursive: true });
       await fs.appendFile(logPath, logLine, 'utf-8');
     });
 
-    // Update provenance.json
+    // Update provenance.json — wiki_pages includes the summary AND all
+    // entity pages this source contributed to.
     const provenance = await readProvenance();
     const entry: ProvenanceEntry = {
-      wiki_pages: [summaryRel],
+      wiki_pages: [summaryRel, ...entityPagePaths],
       synthesized_at: synthesizedAt,
       reliability: 'pending',
       content_hash: item.content_hash,
     };
     provenance[item.raw_path] = entry;
     await writeProvenance(provenance);
+
+    // Refresh Wiki/_index.md graduated tiers from the updated provenance.
+    try {
+      await updateWikiIndex(provenance);
+    } catch (idxErr) {
+      logger.warn('Failed to update Wiki/_index.md', { error: String(idxErr) });
+    }
 
     // Done — move the queue item to done/
     await markDone(claimedPath);
@@ -162,14 +240,20 @@ export async function runBrainSynthesize(_input: z.infer<typeof BrainSynthesizeS
     logger.info('brain_synthesize processed item', {
       raw_path: item.raw_path,
       summary: summaryRel,
+      entities: entityNamesProcessed.length,
     });
 
     return {
       status: 'synthesized' as const,
       raw_path: item.raw_path,
       summary_path: summaryRel,
+      entity_pages: entityPagePaths,
+      entities: entityNamesProcessed,
       synthesized_at: synthesizedAt,
-      message: `Synthesized ${item.raw_path} -> ${summaryRel}. Phase 0 stub — Phase 2 will add extraction + gate.`,
+      message:
+        `Synthesized ${item.raw_path} -> ${summaryRel} ` +
+        `(+${entityPagePaths.length} entity pages). ` +
+        `Phase 1 — Phase 2 will add gate verdicts.`,
     };
   } catch (err) {
     // Restore the queue item so the next call can retry.
