@@ -14,6 +14,7 @@ import { brainLearnToolDefinition, handleBrainLearn } from './tools/brain-learn.
 import { brainPerceiveToolDefinition, handleBrainPerceive } from './tools/brain-perceive.js';
 import { brainSynthesizeToolDefinition, handleBrainSynthesize } from './tools/brain-synthesize.js';
 import { brainReflectToolDefinition, handleBrainReflect } from './tools/brain-reflect.js';
+import { brainTraceToolDefinition, handleBrainTrace } from './tools/brain-trace.js';
 import {
   taskStartToolDefinition, handleTaskStart,
   taskUpdateToolDefinition, handleTaskUpdate,
@@ -35,6 +36,7 @@ const toolDefinitions = [
   brainPerceiveToolDefinition,
   brainSynthesizeToolDefinition,
   brainReflectToolDefinition,
+  brainTraceToolDefinition,
   taskStartToolDefinition,
   taskUpdateToolDefinition,
   taskCompleteToolDefinition,
@@ -47,6 +49,7 @@ const handlers: Record<string, (args: unknown) => Promise<CallToolResult>> = {
   brain_perceive: handleBrainPerceive,
   brain_synthesize: handleBrainSynthesize,
   brain_reflect: handleBrainReflect,
+  brain_trace: handleBrainTrace,
   task_start: handleTaskStart,
   task_update: handleTaskUpdate,
   task_complete: handleTaskComplete,
