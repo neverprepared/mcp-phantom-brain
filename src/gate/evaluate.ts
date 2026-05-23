@@ -19,7 +19,7 @@
  * evaluation for the deprecated brain_commit flow; it is intentionally not
  * used here.
  */
-import Anthropic from '@anthropic-ai/sdk';
+import { spawn } from 'node:child_process';
 import { CONFIG } from '../config.js';
 import { scoreDomain, type DomainTier } from '../validation/source-tiers.js';
 import { logger } from '../shared/logger.js';
@@ -35,7 +35,6 @@ export interface GateVerdict {
 
 const CONTENT_PREVIEW_CHARS = 800;
 const GATE_TIMEOUT_MS = 15_000;
-const GATE_MAX_TOKENS = 256;
 
 const VALID_RELIABILITIES = new Set<Reliability>(['high', 'medium', 'low', 'contested']);
 const VALID_CATEGORIES = new Set<GateCategory>(['source', 'formal', 'informal', 'philosophical']);
@@ -146,6 +145,47 @@ function coerceVerdict(parsed: unknown): GateVerdict {
 }
 
 /**
+ * Invoke the `claude` CLI in non-interactive mode, piping the prompt via stdin.
+ * Uses the subscription credentials already active in the running Claude Code session —
+ * no separate API key required.
+ */
+function callClaudeCLI(prompt: string, model: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('claude', ['--print', '--model', model, '--output-format', 'text'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`Gate CLI call timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    child.stdin.write(prompt, 'utf-8');
+    child.stdin.end();
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(`claude CLI exited with code ${code}: ${stderr.slice(0, 200)}`));
+      }
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+/**
  * Run the Gate against a source. Returns a verdict on every code path —
  * any failure degrades to a medium fallback rather than throwing.
  */
@@ -169,14 +209,6 @@ export async function runGate(opts: {
     };
   }
 
-  const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiKey) {
-    return {
-      reliability: 'medium',
-      reason: 'ANTHROPIC_API_KEY not configured; Phase 2 gate skipped. Defaulting to medium.',
-    };
-  }
-
   const tier = scoreDomain(opts.sourceUrl);
   const prompt = buildGatePrompt({
     title: opts.title,
@@ -186,29 +218,14 @@ export async function runGate(opts: {
     source: opts.source,
   });
 
-  const client = new Anthropic({ apiKey });
-
   try {
-    const response = await client.messages.create(
-      {
-        model: CONFIG.GATE_MODEL,
-        max_tokens: GATE_MAX_TOKENS,
-        messages: [{ role: 'user', content: prompt }],
-      },
-      { signal: AbortSignal.timeout(GATE_TIMEOUT_MS) },
-    );
-
-    // Concatenate any text blocks in the response.
-    const text = response.content
-      .map((block) => (block.type === 'text' ? block.text : ''))
-      .join('')
-      .trim();
+    const text = await callClaudeCLI(prompt, CONFIG.GATE_MODEL, GATE_TIMEOUT_MS);
 
     if (!text) {
-      logger.warn('Gate LLM returned no text content', { format: opts.format });
+      logger.warn('Gate CLI returned no text content', { format: opts.format });
       return {
         reliability: 'medium',
-        reason: 'Gate LLM returned no text content; defaulting to medium.',
+        reason: 'Gate CLI returned no text content; defaulting to medium.',
       };
     }
 
@@ -216,24 +233,24 @@ export async function runGate(opts: {
       const parsed = extractJson(text);
       return coerceVerdict(parsed);
     } catch (parseErr) {
-      logger.warn('Gate LLM returned unparseable response', {
+      logger.warn('Gate CLI returned unparseable response', {
         error: String(parseErr),
         preview: text.slice(0, 200),
       });
       return {
         reliability: 'medium',
-        reason: 'Gate LLM returned unparseable response',
+        reason: 'Gate CLI returned unparseable response; defaulting to medium.',
       };
     }
   } catch (err) {
-    const name = (err as { name?: string })?.name;
-    const isTimeout = name === 'AbortError' || name === 'TimeoutError';
-    logger.warn('Gate LLM call failed', { error: String(err), timeout: isTimeout });
+    const msg = String(err);
+    const isTimeout = msg.includes('timed out');
+    logger.warn('Gate CLI call failed', { error: msg, timeout: isTimeout });
     return {
       reliability: 'medium',
       reason: isTimeout
-        ? 'Gate LLM call timed out after 15s; defaulting to medium.'
-        : `Gate LLM call failed (${String(err)}); defaulting to medium.`,
+        ? `Gate CLI call timed out after ${GATE_TIMEOUT_MS / 1000}s; defaulting to medium.`
+        : `Gate CLI call failed (${msg}); defaulting to medium.`,
     };
   }
 }

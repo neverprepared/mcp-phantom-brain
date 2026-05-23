@@ -17,13 +17,14 @@ import { writeAtomicFile } from './filesystem.js';
 import { logger } from '../shared/logger.js';
 
 export interface QueueItem {
-  raw_path: string;       // relative to vault, e.g. "Raw/curated/2026-05-23-foo.md"
+  raw_path?: string;        // relative to vault; absent for deferred-fetch items
   source: 'curated' | 'gathered';
-  captured_at: string;    // ISO
+  captured_at: string;      // ISO
   title: string;
   source_url?: string;
   format: 'markdown' | 'html' | 'text' | 'pdf';
-  content_hash: string;   // SHA256 hex of raw content
+  content_hash?: string;    // SHA256 hex; absent for deferred-fetch items
+  deferred_fetch?: boolean; // if true, brain_synthesize fetches source_url before processing
 }
 
 function pendingDir(): string {

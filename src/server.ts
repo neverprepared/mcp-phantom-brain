@@ -11,6 +11,7 @@ import { initialize, shutdown, logger, CONFIG } from './core/index.js';
 
 import { brainRecallToolDefinition, handleBrainRecall } from './tools/brain-recall.js';
 import { brainLearnToolDefinition, handleBrainLearn } from './tools/brain-learn.js';
+import { brainPerceiveToolDefinition, handleBrainPerceive } from './tools/brain-perceive.js';
 import { brainSynthesizeToolDefinition, handleBrainSynthesize } from './tools/brain-synthesize.js';
 import { brainReflectToolDefinition, handleBrainReflect } from './tools/brain-reflect.js';
 
@@ -25,6 +26,7 @@ const SERVER_INFO = {
 const toolDefinitions = [
   brainRecallToolDefinition,
   brainLearnToolDefinition,
+  brainPerceiveToolDefinition,
   brainSynthesizeToolDefinition,
   brainReflectToolDefinition,
 ];
@@ -32,6 +34,7 @@ const toolDefinitions = [
 const handlers: Record<string, (args: unknown) => Promise<CallToolResult>> = {
   brain_recall: handleBrainRecall,
   brain_learn: handleBrainLearn,
+  brain_perceive: handleBrainPerceive,
   brain_synthesize: handleBrainSynthesize,
   brain_reflect: handleBrainReflect,
 };
