@@ -37,9 +37,7 @@ import { indexWikiEntry } from '../vault/search.js';
 import {
   extractEntities,
   entityPaths,
-  readEntityPage,
-  createEntityPage,
-  appendToEntityPage,
+  upsertEntityPage,
   buildContentSnippet,
 } from '../vault/entities.js';
 import { updateWikiIndex } from '../vault/wiki-index-md.js';
@@ -241,28 +239,15 @@ export async function runBrainSynthesize(_input: z.infer<typeof BrainSynthesizeS
       try {
         const { absPath: entAbs, relPath: entRel } = entityPaths(name);
         const snippet = buildContentSnippet(rawContent, name);
-        const existing = await readEntityPage(entAbs);
-
-        if (existing === null) {
-          await createEntityPage({
-            name,
-            absPath: entAbs,
-            sourceTitle: item.title,
-            rawPath,
-            contentSnippet: snippet,
-            now: synthesizedAt,
-            verdict,
-          });
-        } else {
-          await appendToEntityPage({
-            absPath: entAbs,
-            sourceTitle: item.title,
-            rawPath,
-            contentSnippet: snippet,
-            now: synthesizedAt,
-            verdict,
-          });
-        }
+        await upsertEntityPage({
+          name,
+          absPath: entAbs,
+          sourceTitle: item.title,
+          rawPath,
+          contentSnippet: snippet,
+          now: synthesizedAt,
+          verdict,
+        });
 
         // Index the entity page so brain_recall picks it up without a full rebuild.
         // Wiki index relPath is relative to Wiki/, not the vault root.

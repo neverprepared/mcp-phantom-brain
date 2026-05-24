@@ -298,6 +298,57 @@ export async function appendToEntityPage(opts: {
   });
 }
 
+/**
+ * Atomically create or append an entity page within a single file lock.
+ * Eliminates the check-then-act race where two concurrent agents both see
+ * a missing page and both call createEntityPage, with the second overwriting
+ * the first's content.
+ */
+export async function upsertEntityPage(opts: {
+  name: string;
+  absPath: string;
+  sourceTitle: string;
+  rawPath: string;
+  contentSnippet: string;
+  now: string;
+  verdict: GateVerdict;
+}): Promise<void> {
+  const { name, absPath, sourceTitle, rawPath, contentSnippet, now, verdict } = opts;
+  const ymd = ymdFromISO(now);
+
+  await withFileLock(absPath, async () => {
+    let existing: string | null = null;
+    try {
+      existing = await fs.readFile(absPath, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+
+    if (existing === null) {
+      const page =
+        `---\n` +
+        `title: "${escapeYamlString(name)}"\n` +
+        `kind: entity\n` +
+        `tags: []\n` +
+        `created: "${now}"\n` +
+        `updated: "${now}"\n` +
+        `source_count: 1\n` +
+        `---\n\n` +
+        `# ${name}\n\n` +
+        `## From: ${sourceTitle} (${ymd})\n\n` +
+        `${contentSnippet}\n\n` +
+        `## Source Reliability\n\n` +
+        `| Claim | Reliability | Category | Reason | Source |\n` +
+        `|---|---|---|---|---|\n` +
+        `${reliabilityRow(sourceTitle, rawPath, verdict)}\n`;
+      await writeAtomicFile(absPath, page);
+    } else {
+      const updated = applyAppend(existing, { sourceTitle, rawPath, contentSnippet, now, ymd, verdict });
+      await writeAtomicFile(absPath, updated);
+    }
+  });
+}
+
 interface AppendOpts {
   sourceTitle: string;
   rawPath: string;
