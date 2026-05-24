@@ -2,54 +2,79 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude a structured, validated long-term memory backed by an Obsidian vault on disk.
 
-Unlike a simple note-taking tool, phantom-brain doesn't just store what you tell it — it validates claims before committing them. The host LLM evaluates each incoming claim for logical fallacies, source quality, and contradictions with existing knowledge before anything is written to memory.
+Content enters through a **Raw → Gate → Wiki** pipeline. Sources are validated for reliability and classified by subject-matter topic before being written to the knowledge base. The host LLM drives the pipeline; the server enforces structure and provides the reference material.
 
 ## How it works
 
-Memory storage is a two-phase protocol:
-
-1. **`brain_remember`** — runs Layer 1 server-side checks (coherence, source tier, near-duplicate detection) and returns a structured evaluation package to the host LLM, including relevant existing atoms and a structured prompt covering 12 fallacy checks, 6 philosophical razors, and a contradiction scan.
-
-2. **`brain_commit`** — the host LLM calls this with its verdict (`store`, `reject`, or `ask`). Accepted claims become atoms in `Memory/`. Rejected claims are logged with full reasoning to `_log/rejections.jsonl`.
-
-The server never reasons — all epistemic judgment happens in the host LLM's context. The server enforces structure and provides the reference material.
+1. **Ingest** — `brain_perceive` (web content) or `brain_learn` (curated docs) writes raw content to `Raw/` and enqueues it for processing.
+2. **Gate** — `brain_synthesize` claims the next queue item and runs the Gate: a `claude` CLI call that scores the source for reliability (`high | medium | low | contested`), flags the failure category if unreliable, and classifies the subject-matter topic (`agents | memory | governance | tools | ...`).
+3. **Synthesize** — the summary page is written to `Wiki/summaries/`, named entities are extracted and fanned out to `Wiki/entities/`, and the `Raw → Wiki` mapping is recorded in `provenance.json`.
+4. **Recall** — `brain_recall` searches summaries and entity pages via hybrid FTS5 + vector RRF, with optional topic pre-filtering.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `brain_recall` | Hybrid FTS5 + vector search over Memory atoms and Wiki pages |
-| `brain_remember` | Layer 1 validation; returns evaluation package for host LLM |
-| `brain_commit` | Commits the host LLM's verdict: store, reject, or ask |
-| `brain_reflect` | Maintenance pass: prunes stale atoms |
-| `brain_why_rejected` | Query the rejection log by topic, fallacy, or claim content |
+| `brain_perceive` | Ingest a gathered web source (URL + content) into the pipeline |
+| `brain_learn` | Ingest a curated document (human-trusted content) into the pipeline |
+| `brain_synthesize` | Process the next queued item: run Gate, write summary + entity pages |
+| `brain_recall` | Hybrid FTS5 + vector search; optional `topic` filter |
+| `brain_reflect` | Maintenance pass: orphan detection, stale gate re-scoring, broken provenance cleanup, duplicate URL flagging |
+| `brain_trace` | Query the synthesis audit trail (`_log.md`) by text, reliability, or date |
+| `task_start` | Create a working memory task, auto-seeded from vault context |
+| `task_update` | Append findings, steps, artifacts, and open questions to an active task |
+| `task_complete` | Promote medium/high findings to the curated queue, then clear the task |
+| `task_get` | Read current task state or list active tasks |
+
+## The Gate
+
+The Gate evaluates each gathered source before it enters the wiki. It never throws — any failure degrades to a `medium` fallback.
+
+**Verdict fields:**
+- `reliability` — `high | medium | low | contested`
+- `category` — failure type when reliability is low/contested: `source | formal | informal | philosophical`
+- `topic` — subject-matter bucket: `agents | memory | governance | tools | training | infrastructure | knowledge | multiagent | general`
+- `reason` — one-sentence explanation
+
+Curated sources (`brain_learn`) skip the LLM — human curation is the quality signal.
+
+The `topic` field is stored in summary frontmatter and used by `brain_recall` for scoped retrieval.
 
 ## Vault structure
 
-The vault is a directory of Markdown files with YAML frontmatter.
-
 ```
 <vault>/
-  Memory/       ← atoms: short factual claims, one per file
+  Raw/
+    curated/         ← brain_learn writes here
+    gathered/        ← brain_perceive writes here
   Wiki/
-    HowTos/
-    Runbooks/
-    References/ ← seed pages: logical fallacies, razors, philosophical logic
-    Scratch/
-  Input/        ← raw source material (immutable after ingest)
-  Output/       ← deliverables
-  _index/       ← SQLite FTS5 + vector index
-  _log/         ← rejection log (rejections.jsonl)
+    summaries/       ← one page per synthesized source
+    entities/        ← one page per extracted entity, appended across sources
+    _log.md          ← append-only synthesis audit trail
+    _index.md        ← entity graduation index (Primary / Emerging / Notes tiers)
+  _index/
+    vectors.db       ← SQLite: FTS5 full-text index + sqlite-vec vector index
+    provenance.json  ← Raw path → Wiki pages + reliability + topic
+    queue/           ← pending/ and done/ QueueItem JSON files
+    wm-<pid>.sqlite  ← per-process working memory (tasks, findings, artifacts)
 ```
-
-On first startup, three reference Wiki pages are seeded:
-- **Logical Fallacies** — 12-fallacy taxonomy used in Layer 2 evaluation
-- **Philosophical Razors** — Occam, Hitchens, Sagan, Hanlon, Hume, Popper
-- **Philosophical Logic** — fallback frameworks for ambiguous claims (modal logic, fuzzy logic, etc.)
 
 ## Search
 
-`brain_recall` uses **hybrid RRF** (Reciprocal Rank Fusion) combining BM25 full-text search and cosine vector similarity when Ollama is available. Falls back to FTS5-only otherwise. Memory atoms and Wiki pages are ranked together in the same result set.
+`brain_recall` uses **hybrid RRF** (Reciprocal Rank Fusion) combining BM25 full-text and cosine vector similarity when Ollama is available. Falls back to FTS5-only otherwise.
+
+The optional `topic` parameter pre-filters results to a subject-matter bucket before ranking, giving scoped recall without changing the query.
+
+## Multi-agent support
+
+Multiple MCP instances can safely share the same vault:
+
+- Queue claiming uses atomic `rename()` — two agents cannot claim the same item
+- All provenance writes (`upsertProvenanceEntry`, `deleteProvenanceEntry`) read inside a file lock
+- `_index.md` updates read provenance inside the lock — no stale overwrites
+- Entity pages use `upsertEntityPage()` — existence check and create/append in one lock
+- `vectors.db` runs WAL mode with a 5s busy timeout
+- Working memory is per-PID sharded — task spaces are naturally isolated
 
 ## Setup
 
@@ -84,10 +109,12 @@ npm run build
 | Var | Default | Purpose |
 |---|---|---|
 | `BRAIN_VAULT_PATH` | `~/...memory` | Vault root directory |
+| `GATE_ENABLED` | `true` | Set to `false` to bypass the LLM gate (all gathered sources default to medium) |
+| `GATE_MODEL` | `claude-haiku-4-5-20251001` | Model used for gate evaluation via the `claude` CLI |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Embeddings endpoint |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Ollama model name |
 | `EMBEDDING_DIMS` | `768` | Vector dimensions |
-| `MCP_BRAIN_LOG_LEVEL` | `info` | Log verbosity (`debug\|info\|warn\|error`) |
+| `MCP_BRAIN_LOG_LEVEL` | `info` | Log verbosity (`debug|info|warn|error`) |
 
 ## Development
 
