@@ -62,5 +62,9 @@ func (s *Server) Register(srv *server.MCPServer) {
 	srv.AddTool(learnTool(), s.handleLearn)
 	srv.AddTool(attachTool(), s.handleAttach)
 	srv.AddTool(traceTool(), s.handleTrace)
-	// Day 12: task_start, task_update, task_complete, task_get.
+
+	srv.AddTool(taskStartTool(), s.handleTaskStart)
+	srv.AddTool(taskUpdateTool(), s.handleTaskUpdate)
+	srv.AddTool(taskCompleteTool(), s.handleTaskComplete)
+	srv.AddTool(taskGetTool(), s.handleTaskGet)
 }
