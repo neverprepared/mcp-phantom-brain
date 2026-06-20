@@ -26,6 +26,9 @@ Content enters through a **Raw → Gate → Wiki** pipeline. Sources are validat
 | `task_update` | Append findings, steps, artifacts, and open questions to an active task |
 | `task_complete` | Promote medium/high findings to the curated queue, then clear the task |
 | `task_get` | Read current task state or list active tasks |
+| `brain_status` | (Go agent mode) Return the running brain's manifest, heartbeat age, and ship-queue depth as JSON |
+| `brain_checkpoint` | (Go agent mode) Run the checkpoint flow; honors the v4.4 mtime-cutoff predicate unless `force=true` |
+| `brain_death` | (Go agent mode) Transition this brain to dead and pack the trimmed death payload into the local ship queue |
 
 ## The Gate
 
@@ -96,6 +99,15 @@ Multiple MCP instances can safely share the same vault:
 - Entity pages use `upsertEntityPage()` — existence check and create/append in one lock
 - `vectors.db` runs WAL mode with a 5s busy timeout
 - Working memory is per-PID sharded — task spaces are naturally isolated
+
+## Go binary (Phase 1 — in progress)
+
+A Go rewrite is underway on the `feat/go-rewrite` branch. The single `pbrainctl` binary subsumes the MCP server (`pbrainctl mcp`) and will host the daemon (`pbrainctl serve`) once Phase 2 ships. Build with `make build`; tests with `make test`. The MCP server supports two startup modes selected automatically by env:
+
+- **legacy** (`BRAIN_VAULT_PATH` set) — drop-in replacement for the TypeScript server; same vault layout, same tools minus the Phase 2 synthesizer.
+- **agent contract** (`CL_BRAIN_API` set) — full v5.0 lifecycle: brain births under `$XDG_DATA_HOME/phantom-brain/{profile}/{vault}/brains/<brain_id>/`, heartbeats over the `markers/alive` flock, runs a recovery sweep on startup, and packs a death payload into `_pending/` on graceful exit. Adds `brain_status` / `brain_checkpoint` / `brain_death` MCP tools.
+
+The daemon (`pbrainctl serve`, multi-vault registry, MinIO ship + synthesizer) and the legacy → agent migration are Phase 2 + 2.5.
 
 ## Setup
 
