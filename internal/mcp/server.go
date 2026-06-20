@@ -14,6 +14,7 @@ package mcp
 import (
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/neverprepared/mcp-phantom-brain/internal/brain"
 	"github.com/neverprepared/mcp-phantom-brain/internal/index"
 	"github.com/neverprepared/mcp-phantom-brain/internal/working"
 )
@@ -39,6 +40,15 @@ type ServerDeps struct {
 	// live. Tools that write markdown (perceive, learn, attach)
 	// resolve paths against it.
 	VaultDir string
+
+	// Lifecycle is the running brain's lifecycle handle, populated
+	// when mcpCmd is invoked under the v5.0 agent contract
+	// (CL_BRAIN_*). The brain_death / brain_checkpoint /
+	// brain_status tools delegate to it. Nil in the legacy
+	// BRAIN_VAULT_PATH startup mode — those tools then return a
+	// helpful "not available in legacy mode" error rather than
+	// segfaulting.
+	Lifecycle *brain.Lifecycle
 }
 
 // Server is the MCP tool registry. Construct once per process, hand
@@ -67,4 +77,8 @@ func (s *Server) Register(srv *server.MCPServer) {
 	srv.AddTool(taskUpdateTool(), s.handleTaskUpdate)
 	srv.AddTool(taskCompleteTool(), s.handleTaskComplete)
 	srv.AddTool(taskGetTool(), s.handleTaskGet)
+
+	srv.AddTool(brainStatusTool(), s.handleBrainStatus)
+	srv.AddTool(brainCheckpointTool(), s.handleBrainCheckpoint)
+	srv.AddTool(brainDeathTool(), s.handleBrainDeath)
 }

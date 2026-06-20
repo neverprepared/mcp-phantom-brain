@@ -111,6 +111,12 @@ func (l *Lifecycle) BrainDir() string { return l.brainDir }
 // the internal layout.
 func (l *Lifecycle) VaultDir() string { return l.brainDir + "/vault" }
 
+// Agent returns the deploy-contract config the Lifecycle was started
+// with. Useful for tools that need vault paths (ShipPendingDir,
+// SnapshotCacheDir) without having those threaded separately into
+// ServerDeps.
+func (l *Lifecycle) Agent() *config.Agent { return l.agent }
+
 // Snapshot returns a defensive copy of the current manifest. Used by
 // brain_status (Day 4) and any tool that wants to report identity.
 func (l *Lifecycle) Snapshot() Manifest {

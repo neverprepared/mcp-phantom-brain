@@ -8,14 +8,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 
+	"github.com/neverprepared/mcp-phantom-brain/internal/brain"
+	"github.com/neverprepared/mcp-phantom-brain/internal/config"
 	"github.com/neverprepared/mcp-phantom-brain/internal/index"
 	pbmcp "github.com/neverprepared/mcp-phantom-brain/internal/mcp"
 	"github.com/neverprepared/mcp-phantom-brain/internal/ollama"
@@ -63,14 +69,18 @@ func versionCmd() *cobra.Command {
 	}
 }
 
-// mcpCmd runs the stdio JSON-RPC MCP server.
+// mcpCmd runs the stdio JSON-RPC MCP server. Two startup modes:
 //
-// Path resolution: reads the same env vars the v4.x TypeScript MCP
-// server used (BRAIN_VAULT_PATH, WORKSPACE_PROFILE) so the Go binary
-// operates against the existing vault on disk. The v5.0 deploy
-// contract (CL_BRAIN_*) takes over once Phase 1 brain birth lands;
-// that's a small change to this function that doesn't ripple through
-// the rest of internal/mcp.
+//   - v5.0 agent contract (CL_BRAIN_API set): full Phase 1 lifecycle —
+//     LoadAgent, recovery sweep, Birth, heartbeat, register
+//     brain_{status,checkpoint,death} alongside the Phase 0 tools.
+//     Graceful Shutdown on SIGINT/SIGTERM packs the death payload.
+//   - legacy BRAIN_VAULT_PATH: Phase 0 behavior, kept so existing
+//     deployments keep working until the operator is ready to cut
+//     over. No Lifecycle, no brain_* lifecycle tools.
+//
+// The choice is made by CL_BRAIN_API alone — operators don't need to
+// set a flag; presence of the agent contract is the signal.
 func mcpCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
@@ -78,66 +88,161 @@ func mcpCmd() *cobra.Command {
 		Long: `Starts an MCP server on stdio. Intended to be spawned by Claude Code
 via .claude.json mcpServers entries.
 
-Required env vars (Phase 0):
-  BRAIN_VAULT_PATH    Absolute path to the vault directory.
+Modes (chosen automatically):
 
-Optional:
-  WORKSPACE_PROFILE   Profile name (default "default"). Used to derive the
-                      per-profile index directory under XDG_CONFIG_HOME.
-  OLLAMA_BASE_URL     Ollama endpoint (default http://localhost:11434).
-  EMBEDDING_MODEL     Model name (default nomic-embed-text).
-  EMBEDDING_DIMS      Embedding dimensionality (default 768).`,
+  v5.0 agent contract (set CL_BRAIN_API to enable):
+    CL_BRAIN_API           daemon URL
+    CL_BRAIN_API_TOKEN     bearer token
+    CL_WORKSPACE_PROFILE   profile name
+    CL_BRAIN_VAULT         vault name
+    CL_BRAIN_ID            optional — rebind to an existing brain dir
+
+  legacy (Phase 0 compatibility):
+    BRAIN_VAULT_PATH       absolute path to the vault directory
+    WORKSPACE_PROFILE      profile name (default "default")
+
+Ollama (both modes):
+  OLLAMA_BASE_URL          embeddings endpoint (default http://localhost:11434)
+  EMBEDDING_MODEL          model name (default nomic-embed-text)
+  EMBEDDING_DIMS           embedding dimensionality (default 768).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			vaultDir := strings.TrimSpace(os.Getenv("BRAIN_VAULT_PATH"))
-			if vaultDir == "" {
-				return fmt.Errorf("BRAIN_VAULT_PATH is required")
+			if strings.TrimSpace(os.Getenv("CL_BRAIN_API")) != "" {
+				return runMCPAgentMode()
 			}
-			vaultDir = expandHome(vaultDir)
-
-			indexDir, err := resolveLegacyIndexDir(vaultDir)
-			if err != nil {
-				return err
-			}
-			if err := os.MkdirAll(indexDir, 0o755); err != nil {
-				return fmt.Errorf("mkdir index dir: %w", err)
-			}
-			if err := vault.EnsureSkeleton(vaultDir); err != nil {
-				return fmt.Errorf("ensure vault skeleton: %w", err)
-			}
-
-			// Reap any orphan working-memory shards from crashed prior
-			// processes before opening our own. Best-effort: a failure
-			// here doesn't block startup.
-			_, _ = working.ReapOrphanedShards(indexDir)
-
-			oll := ollama.New(ollama.OptionsFromEnv())
-
-			idx, err := index.Open(indexDir, oll.Dims())
-			if err != nil {
-				return fmt.Errorf("open index: %w", err)
-			}
-			defer idx.Close()
-
-			wm, err := working.Open(indexDir)
-			if err != nil {
-				return fmt.Errorf("open working memory: %w", err)
-			}
-			defer wm.Close()
-
-			srv := server.NewMCPServer(
-				"phantom-brain",
-				version.Version,
-				server.WithToolCapabilities(false),
-			)
-			pbmcp.NewServer(pbmcp.ServerDeps{
-				Index:    idx,
-				Working:  wm,
-				Embedder: oll,
-				VaultDir: vaultDir,
-			}).Register(srv)
-
-			return server.ServeStdio(srv)
+			return runMCPLegacyMode()
 		},
+	}
+}
+
+// runMCPLegacyMode is the Phase 0 startup path, unchanged. Kept so
+// the live deployment can roll forward to this binary without setting
+// CL_BRAIN_* until the operator is ready.
+func runMCPLegacyMode() error {
+	vaultDir := strings.TrimSpace(os.Getenv("BRAIN_VAULT_PATH"))
+	if vaultDir == "" {
+		return fmt.Errorf("BRAIN_VAULT_PATH is required (or set CL_BRAIN_API for agent-contract mode)")
+	}
+	vaultDir = expandHome(vaultDir)
+
+	indexDir, err := resolveLegacyIndexDir(vaultDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir index dir: %w", err)
+	}
+	if err := vault.EnsureSkeleton(vaultDir); err != nil {
+		return fmt.Errorf("ensure vault skeleton: %w", err)
+	}
+	_, _ = working.ReapOrphanedShards(indexDir)
+
+	oll := ollama.New(ollama.OptionsFromEnv())
+	idx, err := index.Open(indexDir, oll.Dims())
+	if err != nil {
+		return fmt.Errorf("open index: %w", err)
+	}
+	defer idx.Close()
+
+	wm, err := working.Open(indexDir)
+	if err != nil {
+		return fmt.Errorf("open working memory: %w", err)
+	}
+	defer wm.Close()
+
+	srv := server.NewMCPServer("phantom-brain", version.Version, server.WithToolCapabilities(false))
+	pbmcp.NewServer(pbmcp.ServerDeps{
+		Index:    idx,
+		Working:  wm,
+		Embedder: oll,
+		VaultDir: vaultDir,
+	}).Register(srv)
+	return server.ServeStdio(srv)
+}
+
+// runMCPAgentMode is the v5.0 startup path: LoadAgent → recovery
+// sweep → Lifecycle.Start (births brain, starts heartbeat) → register
+// MCP tools rooted at brain_dir/vault → ServeStdio. SIGINT/SIGTERM
+// triggers a graceful Shutdown that packs the death payload before
+// the process exits.
+func runMCPAgentMode() error {
+	agent, err := config.LoadAgent()
+	if err != nil {
+		return err
+	}
+
+	// MCP uses stdout for JSON-RPC; logger MUST go to stderr.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Recovery sweep before we touch anything else — corpses from
+	// crashed siblings get marked dead, freeing their resources.
+	if _, err := brain.Recover(brain.RecoverOpts{
+		Agent:    agent,
+		Platform: brain.NewPlatform(),
+		Logger:   logger,
+	}); err != nil {
+		logger.Warn("phantom-brain: recovery sweep failed (continuing)", slog.String("err", err.Error()))
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	lc, err := brain.Start(brain.StartOpts{
+		Agent:        agent,
+		Platform:     brain.NewPlatform(),
+		Logger:       logger,
+		HeartbeatCtx: ctx,
+	})
+	if err != nil {
+		return fmt.Errorf("brain start: %w", err)
+	}
+	// Best-effort death payload on exit. Idempotent via
+	// brain.IsAlreadyShutDown so a brain_death MCP call followed by
+	// SIGTERM doesn't try to die twice.
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+		defer shutdownCancel()
+		if _, err := lc.Shutdown(shutdownCtx); err != nil && !brain.IsAlreadyShutDown(err) {
+			logger.Warn("phantom-brain: shutdown error", slog.String("err", err.Error()))
+		}
+	}()
+
+	indexDir := filepath.Join(lc.BrainDir(), "_index")
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir index dir: %w", err)
+	}
+	_, _ = working.ReapOrphanedShards(indexDir)
+
+	oll := ollama.New(ollama.OptionsFromEnv())
+	idx, err := index.Open(indexDir, oll.Dims())
+	if err != nil {
+		return fmt.Errorf("open index: %w", err)
+	}
+	defer idx.Close()
+
+	wm, err := working.Open(indexDir)
+	if err != nil {
+		return fmt.Errorf("open working memory: %w", err)
+	}
+	defer wm.Close()
+
+	srv := server.NewMCPServer("phantom-brain", version.Version, server.WithToolCapabilities(false))
+	pbmcp.NewServer(pbmcp.ServerDeps{
+		Index:     idx,
+		Working:   wm,
+		Embedder:  oll,
+		VaultDir:  lc.VaultDir(),
+		Lifecycle: lc,
+	}).Register(srv)
+
+	// Serve in a goroutine so signals can interrupt cleanly.
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- server.ServeStdio(srv) }()
+	select {
+	case <-ctx.Done():
+		logger.Info("phantom-brain: shutdown signal received")
+		return nil
+	case err := <-srvErr:
+		return err
 	}
 }
 
