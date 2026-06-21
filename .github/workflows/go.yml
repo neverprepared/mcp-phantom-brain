@@ -9,7 +9,10 @@ on:
 jobs:
   test:
     name: Build & Test
-    runs-on: ubuntu-latest
+    # macos-14 is GitHub's Apple Silicon (arm64) runner — matches the
+    # only sqlite-vec loadable currently vendored in internal/vec/dylibs/.
+    # Linux/amd64 vendoring + matrix expansion is tracked for Phase 5.
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
