@@ -58,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --prefix)   PREFIX="$2";   shift 2 ;;
         --data-dir) DATA_DIR="$2"; shift 2 ;;
         --alias)    ALIAS="$2";    shift 2 ;;
+        --yes|-y)   YES=1;         shift   ;;
         *) usage ;;
     esac
 done
@@ -92,8 +93,10 @@ case "$MODE" in
                 printf "    %-8s %s\n" "$sub" "$(du -sh "$VAULT/$sub" | awk '{print $1}')"
             fi
         done
-        read -rp "Proceed? [y/N] " ok
-        [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 0; }
+        if [[ "${YES:-}" != "1" ]]; then
+            read -rp "Proceed? [y/N] " ok
+            [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 0; }
+        fi
 
         # Upload each top-level subdir as a mirrored prefix. `mc mirror`
         # is incremental + resumable; safe to re-run on partial uploads.
@@ -124,8 +127,10 @@ case "$MODE" in
         echo "Apply plan:"
         echo "  source       : $ALIAS/$BUCKET/$PREFIX/seed/{Wiki,Raw,_index}"
         echo "  target       : $COLLECTIVE_VAULT/{Wiki,Raw,_index}"
-        read -rp "Proceed? [y/N] " ok
-        [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 0; }
+        if [[ "${YES:-}" != "1" ]]; then
+            read -rp "Proceed? [y/N] " ok
+            [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 0; }
+        fi
 
         mkdir -p "$COLLECTIVE_VAULT"
         for sub in Wiki Raw _index; do
