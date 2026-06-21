@@ -37,6 +37,8 @@
 package integration_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http/httptest"
@@ -196,6 +198,110 @@ func TestMinIO_AgentDaemonSmoke(t *testing.T) {
 
 	t.Log("MinIO agent↔daemon roundtrip succeeded end-to-end")
 }
+
+// TestMinIO_LeaveUploadInBucket is the "show me the bytes" companion
+// to TestMinIO_AgentDaemonSmoke. Drives /merge/init + the presigned
+// PUT, then STOPS before /merge/complete so the upload object stays
+// in the bucket for operator inspection.
+//
+// After it runs:
+//   mc ls --recursive np/$MINIO_BUCKET/smoketest/memory/_uploads/
+//   mc cat np/$MINIO_BUCKET/<full key from the test output> | tar tf -
+//
+// Cleanup (run yourself when done — the test deliberately doesn't):
+//   mc rm --recursive --force np/$MINIO_BUCKET/smoketest/memory/_uploads/
+func TestMinIO_LeaveUploadInBucket(t *testing.T) {
+	if os.Getenv("MINIO_INTEGRATION") != "1" {
+		t.Skip("set MINIO_INTEGRATION=1 to run")
+	}
+	endpoint := mustEnv(t, "MINIO_ENDPOINT")
+	bucket := mustEnv(t, "MINIO_BUCKET")
+	accessKey := mustEnv(t, "MINIO_ACCESS_KEY")
+	secretKey := mustEnv(t, "MINIO_SECRET_KEY")
+	useSSL := os.Getenv("MINIO_USE_SSL") != "false"
+
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+	writeMinIOServerToml(t, cfgDir, endpoint, bucket, accessKey, secretKey, useSSL)
+	tok := seedVaultAuth(t, cfgDir, "smoketest", "memory")
+
+	d, err := server.Start(server.StartOpts{
+		ConfigDir: cfgDir,
+		DataDir:   server.DataDir(dataDir),
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	if err != nil {
+		t.Fatalf("daemon Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+
+	ts := httptest.NewServer(d.Router())
+	t.Cleanup(ts.Close)
+
+	// Build a recognisable tarball so `mc cat | tar tf -` shows
+	// something obvious during inspection.
+	payload := buildInspectablePayload(t)
+
+	// Use the agent client (same code path the real shipqueue uses)
+	// to drive init + PUT. Stop before complete.
+	agent := buildSmokeAgent(t, ts.URL, tok, t.TempDir())
+	client, err := brain.NewClient(brain.ClientOpts{BaseURL: agent.API, Token: agent.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	init, err := client.InitMerge(ctx, "brain-inspectable", int64(len(payload)), 3600)
+	if err != nil {
+		t.Fatalf("InitMerge: %v", err)
+	}
+	t.Logf("upload_id=%s", init.UploadID)
+	t.Logf("presigned URL=%s", init.URL)
+
+	if _, err := client.UploadTarball(ctx, init.URL, bytesReader(payload), int64(len(payload))); err != nil {
+		t.Fatalf("UploadTarball: %v", err)
+	}
+
+	objKey := "smoketest/memory/_uploads/" + init.UploadID + ".tar"
+	t.Logf("UPLOAD LEFT IN BUCKET — inspect with:")
+	t.Logf("  mc ls np/%s/%s", bucket, objKey)
+	t.Logf("  mc cat np/%s/%s | tar tvf -", bucket, objKey)
+	t.Logf("Cleanup when done:")
+	t.Logf("  mc rm np/%s/%s", bucket, objKey)
+}
+
+// buildInspectablePayload returns a tiny tarball with two files at
+// known names so `tar tvf -` output looks like something a human
+// would recognise.
+func buildInspectablePayload(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	now := time.Now()
+	for name, body := range map[string]string{
+		"manifest.json":              `{"brain_id":"brain-inspectable","note":"left for ops inspection"}`,
+		"vault/Raw/curated/hello.md": "# inspectable\n\nIf you can read this with `mc cat | tar -xO`, MinIO held the bytes.\n",
+	} {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Size: int64(len(body)), ModTime: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// bytesReader keeps the test's import block tight — could use
+// bytes.NewReader directly but defining one helper keeps the smoke
+// test free of unrelated stdlib pull-ins.
+func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
 
 // --- helpers ---------------------------------------------------------
 
