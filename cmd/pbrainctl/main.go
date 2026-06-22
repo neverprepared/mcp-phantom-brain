@@ -50,6 +50,7 @@ See https://github.com/neverprepared/mcp-phantom-brain for the v5 spec.`,
 	root.AddCommand(mcpCmd())
 	root.AddCommand(serveCmd())
 	root.AddCommand(migrateLegacyCmd())
+	root.AddCommand(ingestBulkCmd())
 
 	// Operator subcommands (Phase 3). Grouped by domain so the help
 	// text stays scannable.
