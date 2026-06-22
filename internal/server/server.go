@@ -161,6 +161,13 @@ func Start(opts StartOpts) (*Daemon, error) {
 		synth:        noopSynthQueue{}, // Day 5 swaps in the real worker
 	}
 
+	// Phase 6: the MinIO backend doubles as the AttachmentStore for
+	// /api/brain/attach. LocalBackend has no blob surface, so /attach
+	// stays 503 in local-mode deploys (operator should use minio).
+	if mb, ok := backend.(*MinIOBackend); ok {
+		d.attach = mb
+	}
+
 	// Phase 6: optional OS client. Daemon still starts without it —
 	// snapshot / health / merge routes work; only write endpoints fail.
 	if cfg.OpenSearch.Enabled() {
