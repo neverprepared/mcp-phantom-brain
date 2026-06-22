@@ -54,6 +54,13 @@ func attachTool() mcp.Tool {
 		mcp.WithString("source_url",
 			mcp.Description("URL the file came from, when known."),
 		),
+		mcp.WithString("content_type",
+			mcp.Description("MIME type override (e.g. \"application/pdf\"). When empty, the agent guesses from the file extension."),
+		),
+		mcp.WithArray("tags",
+			mcp.Description("Free-form labels for faceting/recall, e.g. \"vendor:UIA\", \"invoice\"."),
+			mcp.Items(map[string]any{"type": "string"}),
+		),
 	)
 }
 
@@ -74,6 +81,8 @@ func (s *Server) handleAttach(ctx context.Context, req mcp.CallToolRequest) (*mc
 	}
 	description, _ := req.RequireString("description")
 	sourceURL, _ := req.RequireString("source_url")
+	contentType, _ := req.RequireString("content_type")
+	tags, _ := req.RequireStringSlice("tags")
 
 	// Read the binary. Size cap at 100 MB so a misuse can't OOM the
 	// MCP server — well above any realistic single attachment.
@@ -167,7 +176,10 @@ func (s *Server) handleAttach(ctx context.Context, req mcp.CallToolRequest) (*mc
 	// stored blob. For now the description carries the only
 	// searchable text.
 	if client := lifecycleClient(s); client != nil {
-		mimeType := guessMIMEType(ext)
+		mimeType := strings.TrimSpace(contentType)
+		if mimeType == "" {
+			mimeType = guessMIMEType(ext)
+		}
 		// v2.4: attachment is stamped as attachment_stub, semantic.
 		// Source carries the original local path so the operator can
 		// trace back where the file came from.
@@ -187,6 +199,7 @@ func (s *Server) handleAttach(ctx context.Context, req mcp.CallToolRequest) (*mc
 			MIMEType:         mimeType,
 			BytesB64:         base64.StdEncoding.EncodeToString(raw),
 			ExtractedText:    description,
+			Tags:             tags,
 			Embedding:        embs[0],
 			MemoryFields:     mf,
 		}); err != nil {

@@ -304,6 +304,40 @@ func TestHandlerAttach_HappyPath(t *testing.T) {
 	}
 }
 
+func TestHandlerAttach_TagsAndContentType(t *testing.T) {
+	r := startWriteRig(t)
+	defer r.cleanup()
+
+	payload := []byte("tagged attachment bytes")
+	sha := osearch.SHA256Hex(payload)
+	wantTags := []string{"vendor:UIA", "invoice"}
+	resp := r.post(t, "/api/brain/attach", AttachRequest{
+		SHA:              sha,
+		OriginalFilename: "invoice.pdf",
+		MIMEType:         "application/pdf",
+		BytesB64:         base64.StdEncoding.EncodeToString(payload),
+		Tags:             wantTags,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, b)
+	}
+
+	doc := r.os.attachments[osearch.DocID("personal", "memory", sha)]
+	if doc.MIMEType != "application/pdf" {
+		t.Errorf("MIMEType = %q, want application/pdf (caller-supplied must round-trip)", doc.MIMEType)
+	}
+	if len(doc.Tags) != len(wantTags) {
+		t.Fatalf("Tags = %v, want %v", doc.Tags, wantTags)
+	}
+	for i, tag := range wantTags {
+		if doc.Tags[i] != tag {
+			t.Errorf("Tags[%d] = %q, want %q", i, doc.Tags[i], tag)
+		}
+	}
+}
+
 func TestHandlerAttach_RejectsSHAMismatch(t *testing.T) {
 	r := startWriteRig(t)
 	defer r.cleanup()
