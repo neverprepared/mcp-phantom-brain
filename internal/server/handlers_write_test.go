@@ -232,7 +232,10 @@ func TestHandlerPerceive_DisabledWithoutOS(t *testing.T) {
 	body, _ := json.Marshal(PerceiveRequest{SHA: validSHA(), Title: "x", Body: "y"})
 	req, _ := http.NewRequest(http.MethodPost, url+"/api/brain/perceive", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 when OS unwired", resp.StatusCode)
@@ -356,7 +359,10 @@ func TestHandlerAttachGet_404OnMissing(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, r.url+"/api/brain/attach/"+validSHA(), nil)
 	req.Header.Set("Authorization", "Bearer "+r.token)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
