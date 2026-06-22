@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -345,6 +346,38 @@ func NewMinIOBackend(opts MinIOOptions) (*MinIOBackend, error) {
 		dataDir: opts.DataDir,
 		uploads: map[string]minioUploadState{},
 	}, nil
+}
+
+// PutAttachment stores body at the canonical attachment key for
+// (profile, vault, sha, ext). Implements AttachmentStore (Phase 6).
+// Idempotent — re-puts of the same content overwrite the same key
+// since MinIO PutObject is last-write-wins on a content-addressed
+// path. Returns the resolved object key the daemon writes into the
+// OS attachment doc's MinIOKey field.
+func (m *MinIOBackend) PutAttachment(ctx context.Context, profile, vault, sha, ext string, body []byte, contentType string) (string, error) {
+	key := fmt.Sprintf("%s/%s/attachments/%s%s", profile, vault, sha, ext)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	_, err := m.client.PutObject(ctx, m.bucket, key, bytes.NewReader(body), int64(len(body)),
+		minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return "", fmt.Errorf("server: minio put attachment %s: %w", key, err)
+	}
+	return key, nil
+}
+
+// PresignGet returns a short-lived URL the agent can GET to retrieve
+// the blob. Implements AttachmentStore (Phase 6). ttl bounds validity;
+// the daemon's /api/brain/attach/{sha} handler typically passes
+// 10 minutes — long enough for an agent to follow the redirect, short
+// enough that a leaked URL expires fast.
+func (m *MinIOBackend) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	u, err := m.client.PresignedGetObject(ctx, m.bucket, key, ttl, nil)
+	if err != nil {
+		return "", fmt.Errorf("server: minio presign get %s: %w", key, err)
+	}
+	return u.String(), nil
 }
 
 // RegisterUpload pre-records the (profile, vault) binding for an
