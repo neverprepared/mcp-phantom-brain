@@ -1,11 +1,13 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- ScoreDomain -----------------------------------------------------
@@ -182,6 +184,35 @@ func writeFakeClaude(t *testing.T, fixedOutput string) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\ncat >/dev/null\nprintf %s '" + strings.ReplaceAll(fixedOutput, "'", "'\\''") + "'\n"
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return path
+}
+
+// writeFailingClaude drops a script at dir/claude that drains stdin
+// and exits 1 with a stderr message. Used to test the LLM-call error
+// path + the regex-extractor fallback.
+func writeFailingClaude(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncat >/dev/null\necho 'fake claude failure' >&2\nexit 1\n"
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return path
+}
+
+// writeSlowClaude drops a script that sleeps `d` before exiting,
+// for verifying the context-deadline path in CallClaudeCLI.
+func writeSlowClaude(t *testing.T, d time.Duration) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncat >/dev/null\nsleep %.3f\nprintf '[]'\n", d.Seconds())
 	path := filepath.Join(dir, "claude")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

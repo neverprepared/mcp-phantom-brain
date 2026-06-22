@@ -217,7 +217,12 @@ func (w *SynthWorker) processJob(ctx context.Context, job synthJob) error {
 	// Extract entities from RAW content per v5.0 rationale — entity
 	// coverage is more faithful on the original text than the LLM
 	// distillation.
-	entities := ExtractEntities(content)
+	// v2.4: LLM-driven entity extraction when claude is available —
+	// falls back to the regex extractor (heading + bold heuristics)
+	// otherwise. The LLM version filters out section labels +
+	// descriptive list items that the regex can't distinguish from
+	// real named entities; the regex stays as a resilient fallback.
+	entities := extractEntitiesBest(ctx, doc.Title, content, w.cliAvailable, w.logger)
 	entitySlugs := make([]string, 0, len(entities))
 	for _, ent := range entities {
 		slug, err := w.upsertEntity(ctx, job, doc, ent, content, verdict)
