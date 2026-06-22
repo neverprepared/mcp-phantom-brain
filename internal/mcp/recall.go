@@ -112,13 +112,41 @@ func renderRecallHits(query string, hits []index.Hit) string {
 	return b.String()
 }
 
-// ftsPhrase wraps a free-text query in FTS5 phrase-literal syntax:
-// double quotes around the string with any embedded quotes doubled.
-// The tokenizer still splits the phrase on its own rules (whitespace,
-// punctuation) so multi-word queries still match; the wrapper just
-// prevents the FTS5 parser from interpreting user punctuation as
-// column scopes or operators.
+// ftsPhrase rewrites a free-text query into FTS5 syntax that does an
+// implicit OR over its tokens. Each token is wrapped in double quotes
+// (preventing FTS5 from treating user punctuation as a column-scope
+// or operator) and joined with " OR ".
+//
+//	"loop engineering AI coding agents"
+//	  → `"loop" OR "engineering" OR "AI" OR "coding" OR "agents"`
+//
+// The previous implementation wrapped the WHOLE query in one set of
+// quotes, which made FTS5 treat it as a strict ordered phrase match.
+// That meant a query like "loop engineering AI coding agents" missed
+// a doc titled "What Is Loop Engineering? The New Meta for AI Coding
+// Agents" because the `? The New Meta for` between Engineering and AI
+// broke the consecutive-token requirement. Tokenize + OR-join gives
+// the BM25 path a chance to score docs by individual term hits, which
+// is what hybrid recall expects from its text half.
 func ftsPhrase(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	tokens := strings.Fields(s)
+	if len(tokens) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		// Skip lone FTS5 reserved words that have no content
+		// ("AND"/"OR"/"NOT" by themselves). Folded to lowercase
+		// because tokenizer is case-insensitive anyway.
+		switch strings.ToLower(t) {
+		case "and", "or", "not", "near":
+			continue
+		}
+		out = append(out, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, " OR ")
 }
 
