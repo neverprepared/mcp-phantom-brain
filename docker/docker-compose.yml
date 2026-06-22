@@ -29,8 +29,12 @@ services:
     image: opensearchproject/opensearch:2.18.0
     container_name: pbrain-opensearch
     restart: unless-stopped
+    # Mapped to 9201 on the host to avoid colliding with an
+    # operator-run OS at :9200. Daemon reaches it via the compose
+    # service name `opensearch:9200`, so the host mapping is purely
+    # for ad-hoc debugging (curl from your laptop).
     ports:
-      - "9200:9200"
+      - "9201:9200"
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
