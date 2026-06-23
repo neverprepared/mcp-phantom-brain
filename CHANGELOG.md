@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/neverprepared/phantom-brain/compare/v2.6.1...v3.0.0) (2026-06-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* v3.0 — client/server split + GC + module rename to phantom-brain ([#58](https://github.com/neverprepared/phantom-brain/issues/58))
+
+### Features
+
+* v3.0 — client/server split + GC + module rename to phantom-brain ([#58](https://github.com/neverprepared/phantom-brain/issues/58)) ([9884c22](https://github.com/neverprepared/phantom-brain/commit/9884c22e0c4080ba9ec7e36ce38069beb2900691))
+
 ## [2.6.1](https://github.com/neverprepared/mcp-phantom-brain/compare/v2.6.0...v2.6.1) (2026-06-23)
 
 
