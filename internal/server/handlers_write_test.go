@@ -85,14 +85,21 @@ func (f *fakeOS) GetAttachment(_ context.Context, profile, vault, sha string) (*
 }
 
 type fakeAttach struct {
-	mu     sync.Mutex
-	blobs  map[string][]byte
+	mu      sync.Mutex
+	blobs   map[string][]byte
+	tags    map[string][]string
 	failPut bool
 }
 
-func newFakeAttach() *fakeAttach { return &fakeAttach{blobs: map[string][]byte{}} }
+func newFakeAttach() *fakeAttach {
+	return &fakeAttach{blobs: map[string][]byte{}, tags: map[string][]string{}}
+}
 
-func (f *fakeAttach) PutAttachment(_ context.Context, profile, vault, sha, ext string, body []byte, _ string) (string, error) {
+func (f *fakeAttach) PutAttachment(ctx context.Context, profile, vault, sha, ext string, body []byte, ct string) (string, error) {
+	return f.PutAttachmentWithTags(ctx, profile, vault, sha, ext, body, ct, nil)
+}
+
+func (f *fakeAttach) PutAttachmentWithTags(_ context.Context, profile, vault, sha, ext string, body []byte, _ string, indexTags []string) (string, error) {
 	if f.failPut {
 		return "", errors.New("fake: put failed")
 	}
@@ -100,6 +107,9 @@ func (f *fakeAttach) PutAttachment(_ context.Context, profile, vault, sha, ext s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.blobs[key] = append([]byte(nil), body...)
+	if len(indexTags) > 0 {
+		f.tags[key] = append([]string(nil), indexTags...)
+	}
 	return key, nil
 }
 func (f *fakeAttach) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
@@ -343,6 +353,18 @@ func TestHandlerAttach_TagsAndContentType(t *testing.T) {
 	for i, tag := range wantTags {
 		if doc.Tags[i] != tag {
 			t.Errorf("Tags[%d] = %q, want %q", i, doc.Tags[i], tag)
+		}
+	}
+
+	// v2.5.1: index tags must also reach MinIO via PutAttachmentWithTags.
+	wantKey := fmt.Sprintf("personal/memory/attachments/%s.pdf", sha)
+	storedTags := r.attach.tags[wantKey]
+	if len(storedTags) != len(wantTags) {
+		t.Fatalf("MinIO tags = %v, want %v (PutAttachmentWithTags must thread req.Tags through)", storedTags, wantTags)
+	}
+	for i, tag := range wantTags {
+		if storedTags[i] != tag {
+			t.Errorf("MinIO tags[%d] = %q, want %q", i, storedTags[i], tag)
 		}
 	}
 }

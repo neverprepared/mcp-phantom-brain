@@ -25,7 +25,11 @@ func newCaptureStore() *captureStore {
 	return &captureStore{puts: map[string][]byte{}, puttCT: map[string]string{}}
 }
 
-func (s *captureStore) PutAttachment(_ context.Context, profile, vault, sha, ext string, body []byte, ct string) (string, error) {
+func (s *captureStore) PutAttachment(ctx context.Context, profile, vault, sha, ext string, body []byte, ct string) (string, error) {
+	return s.PutAttachmentWithTags(ctx, profile, vault, sha, ext, body, ct, nil)
+}
+
+func (s *captureStore) PutAttachmentWithTags(_ context.Context, profile, vault, sha, ext string, body []byte, ct string, _ []string) (string, error) {
 	if s.failPut {
 		return "", errors.New("fake put fail")
 	}

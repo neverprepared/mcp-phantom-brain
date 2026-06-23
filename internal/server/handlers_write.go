@@ -91,6 +91,12 @@ type AttachmentStore interface {
 	// (profile, vault, sha, ext). Idempotent — repeated puts with
 	// identical content are no-ops. Returns the resolved object key.
 	PutAttachment(ctx context.Context, profile, vault, sha, ext string, body []byte, contentType string) (key string, err error)
+	// PutAttachmentWithTags is PutAttachment plus an index-side tag
+	// slice the store mirrors onto the blob (S3 object tags on MinIO).
+	// v2.5.1: keeps blob and pb_attachments index in sync at attach
+	// time so lifecycle policies + tag-based access can use the same
+	// shape brain_recall sees.
+	PutAttachmentWithTags(ctx context.Context, profile, vault, sha, ext string, body []byte, contentType string, indexTags []string) (key string, err error)
 	// PresignGet returns a short-lived URL the agent can GET to
 	// retrieve the blob. ttl bounds validity.
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (url string, err error)
@@ -368,7 +374,7 @@ func (d *Daemon) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := extFromFilename(req.OriginalFilename)
-	key, err := d.attach.PutAttachment(r.Context(), binding.Key.Profile, binding.Key.Vault, req.SHA, ext, bytes, req.MIMEType)
+	key, err := d.attach.PutAttachmentWithTags(r.Context(), binding.Key.Profile, binding.Key.Vault, req.SHA, ext, bytes, req.MIMEType, req.Tags)
 	if err != nil {
 		WriteErrorEnvelope(w, http.StatusBadGateway, ErrCodeStorageBackendErr,
 			"attachment put failed: "+err.Error(), nil)

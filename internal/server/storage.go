@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -355,16 +356,90 @@ func NewMinIOBackend(opts MinIOOptions) (*MinIOBackend, error) {
 // path. Returns the resolved object key the daemon writes into the
 // OS attachment doc's MinIOKey field.
 func (m *MinIOBackend) PutAttachment(ctx context.Context, profile, vault, sha, ext string, body []byte, contentType string) (string, error) {
+	return m.PutAttachmentWithTags(ctx, profile, vault, sha, ext, body, contentType, nil)
+}
+
+// PutAttachmentWithTags is PutAttachment with index-side tags mirrored
+// onto the MinIO object as S3 object tags. v2.5.1: keeps MinIO and the
+// pb_attachments index in sync at attach time so lifecycle policies and
+// downstream consumers can filter on the same tag set the agent sees.
+// One-way: drift can occur if the index tags change later — bulk re-sync
+// is a future brain_reflect concern.
+//
+// indexTags is the flat []string the agent provides. encodeMinIOTags
+// splits "key:value" pairs and packs bare tags under tag1..tagN.
+// S3 caps at 10 object tags; extras are dropped with no error so a
+// well-tagged ingest doesn't break.
+func (m *MinIOBackend) PutAttachmentWithTags(ctx context.Context, profile, vault, sha, ext string, body []byte, contentType string, indexTags []string) (string, error) {
 	key := fmt.Sprintf("%s/%s/attachments/%s%s", profile, vault, sha, ext)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	_, err := m.client.PutObject(ctx, m.bucket, key, bytes.NewReader(body), int64(len(body)),
-		minio.PutObjectOptions{ContentType: contentType})
+	opts := minio.PutObjectOptions{ContentType: contentType}
+	if userTags := encodeMinIOTags(indexTags); len(userTags) > 0 {
+		opts.UserTags = userTags
+	}
+	_, err := m.client.PutObject(ctx, m.bucket, key, bytes.NewReader(body), int64(len(body)), opts)
 	if err != nil {
 		return "", fmt.Errorf("server: minio put attachment %s: %w", key, err)
 	}
 	return key, nil
+}
+
+// encodeMinIOTags turns the agent's flat tag slice into the
+// map[string]string that minio-go's UserTags option wants. Splits the
+// first `:` of each tag — `vendor:UIA` -> {vendor: UIA}. Bare tags
+// (`anatomy`) become {tag1: anatomy}, {tag2: ...} etc. S3 caps at 10
+// object tags; anything past the cap is silently dropped to keep
+// well-tagged ingests from failing. Tag chars that fall outside S3's
+// validTagKeyValue regex are skipped (the regex allows alphanumerics,
+// dashes, dots, underscores, colons, slashes, plus signs, at-signs,
+// equals, and spaces — covers every tag shape phantom-brain uses).
+func encodeMinIOTags(indexTags []string) map[string]string {
+	if len(indexTags) == 0 {
+		return nil
+	}
+	const maxObjectTags = 10
+	out := make(map[string]string, len(indexTags))
+	bare := 0
+	for _, raw := range indexTags {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if len(out) >= maxObjectTags {
+			break
+		}
+		var k, v string
+		if i := strings.Index(raw, ":"); i > 0 && i < len(raw)-1 {
+			k = strings.TrimSpace(raw[:i])
+			v = strings.TrimSpace(raw[i+1:])
+		} else {
+			bare++
+			k = fmt.Sprintf("tag%d", bare)
+			v = raw
+		}
+		if !minioTagValid(k) || !minioTagValid(v) {
+			continue
+		}
+		if len(k) > 128 || len(v) > 256 {
+			continue
+		}
+		if _, exists := out[k]; exists {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+var minioTagCharset = regexp.MustCompile(`^[a-zA-Z0-9\-+._:/@ =]+$`)
+
+func minioTagValid(s string) bool {
+	if s == "" {
+		return false
+	}
+	return minioTagCharset.MatchString(s)
 }
 
 // GetAttachmentBytes streams the object at key into memory. Used by
