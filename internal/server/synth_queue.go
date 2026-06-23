@@ -192,18 +192,31 @@ func (w *SynthWorker) run(ctx context.Context) {
 	}
 }
 
-// resolveForJob returns the per-binding views (or the shared fallback
-// fields) for a job. v3.2 per-binding storage overrides: each
-// (profile, vault) may resolve to its own OS index prefix + MinIO
-// bucket. The worker calls this once per job and uses the result
-// instead of the struct-level os/attach fields.
-func (w *SynthWorker) resolveForJob(job synthJob) (osWriter, AttachmentStore) {
+// resolveForJob returns the per-binding views (osWriter +
+// AttachmentStore) for a job's (profile, vault). v3.2 per-binding
+// storage overrides: each (profile, vault) may resolve to its own
+// OS index prefix + MinIO bucket. The worker calls this once per
+// job and uses the result instead of the struct-level os/attach
+// fields.
+//
+// Returns ok=false on cache miss. Callers MUST drop the job rather
+// than fall back to shared infra — synthesising a doc into the
+// wrong tenant's indices/bucket is a worse failure than dropping
+// the job and waiting for a re-enqueue. The Resolve callback uses
+// the same fail-loud contract as Daemon.resolveOS/resolveAttach;
+// the shared fallback fields (w.os/w.attach) remain only for the
+// legacy single-tenant path where Resolve is nil.
+func (w *SynthWorker) resolveForJob(job synthJob) (osWriter, AttachmentStore, bool) {
 	if w.Resolve != nil {
 		if oc, at, ok := w.Resolve(job.Profile, job.Vault); ok {
-			return oc, at
+			return oc, at, true
 		}
+		return nil, nil, false
 	}
-	return w.os, w.attach
+	if w.os == nil {
+		return nil, nil, false
+	}
+	return w.os, w.attach, true
 }
 
 // processJob runs one (profile, vault, sha) item through the
@@ -211,7 +224,19 @@ func (w *SynthWorker) resolveForJob(job synthJob) (osWriter, AttachmentStore) {
 // Warn — the doc stays in raw-only state and a future re-enqueue
 // (operator-driven, e.g. brain_reflect) can retry.
 func (w *SynthWorker) processJob(ctx context.Context, job synthJob) error {
-	osc, attach := w.resolveForJob(job)
+	osc, attach, ok := w.resolveForJob(job)
+	if !ok {
+		// Dropping the job is the correct response: we cannot synthesise
+		// without knowing which prefix/bucket the binding resolves to,
+		// and writing to the shared default would leak across tenants.
+		// A re-enqueue (e.g. brain_reflect) will retry once the binding
+		// view is registered.
+		w.logger.Error("phantom-brain: synth job dropped — no binding view registered",
+			slog.String("profile", job.Profile),
+			slog.String("vault", job.Vault),
+			slog.String("sha", job.SHA))
+		return nil
+	}
 	doc, err := osc.GetSummary(ctx, job.Profile, job.Vault, job.SHA)
 	if err != nil {
 		return err

@@ -203,35 +203,86 @@ func TestBindingDepCache_GetSetDelete(t *testing.T) {
 }
 
 // TestResolveOS_PrefersBindingView confirms the per-binding view in
-// d.bindings shadows the shared d.osClient when registered.
+// d.bindings is returned when registered.
 func TestResolveOS_PrefersBindingView(t *testing.T) {
-	shared := newFakeOS()
-	d := &Daemon{osClient: shared, bindings: newBindingDepCache()}
-	b := VaultBinding{Key: VaultKey{"p", "v"}}
-	if got := d.resolveOS(b); got != shared {
-		t.Fatal("empty cache: expected shared osClient")
-	}
 	scoped := newFakeOS()
+	d := &Daemon{bindings: newBindingDepCache()}
+	b := VaultBinding{Key: VaultKey{"p", "v"}}
 	d.bindings.Set(b.Key, &bindingDeps{OS: scoped})
-	if got := d.resolveOS(b); got != scoped {
+	got, err := d.resolveOS(b)
+	if err != nil {
+		t.Fatalf("registered binding: unexpected err %v", err)
+	}
+	if got != scoped {
 		t.Errorf("expected per-binding osWriter")
 	}
 }
 
-// TestResolveAttach_PrefersBindingView is the AttachmentStore
-// analogue. Fallback (no binding registered → d.attach) is exercised
-// by every other handler test in this package.
+// TestResolveOS_FailsLoudOnCacheMiss confirms v3.2's blocker fix:
+// when no per-binding view is registered the resolver returns an
+// error mentioning the binding key rather than silently routing
+// the write to the shared daemon-global osClient.
+func TestResolveOS_FailsLoudOnCacheMiss(t *testing.T) {
+	shared := newFakeOS()
+	d := &Daemon{osClient: shared, bindings: newBindingDepCache()}
+	b := VaultBinding{Key: VaultKey{"p", "v"}}
+	got, err := d.resolveOS(b)
+	if err == nil {
+		t.Fatal("expected error on cache miss; got nil (silent fallback)")
+	}
+	if got != nil {
+		t.Errorf("expected nil osWriter on error; got %v", got)
+	}
+	if !strings.Contains(err.Error(), "p/v") {
+		t.Errorf("err should mention binding key; got %q", err.Error())
+	}
+}
+
+// TestResolveOS_SharedFallbackOptIn confirms the explicit
+// allowSharedFallback flag re-enables the legacy single-tenant
+// path (tests, single-binding daemons).
+func TestResolveOS_SharedFallbackOptIn(t *testing.T) {
+	shared := newFakeOS()
+	d := &Daemon{osClient: shared, bindings: newBindingDepCache(), allowSharedFallback: true}
+	b := VaultBinding{Key: VaultKey{"p", "v"}}
+	got, err := d.resolveOS(b)
+	if err != nil {
+		t.Fatalf("unexpected err with allowSharedFallback: %v", err)
+	}
+	if got != shared {
+		t.Errorf("expected shared osClient fallback")
+	}
+}
+
+// TestResolveAttach_PrefersBindingView is the AttachmentStore analogue.
 func TestResolveAttach_PrefersBindingView(t *testing.T) {
+	scoped := newFakeAttach()
+	d := &Daemon{bindings: newBindingDepCache()}
+	b := VaultBinding{Key: VaultKey{"p", "v"}}
+	d.bindings.Set(b.Key, &bindingDeps{Attach: scoped})
+	got, err := d.resolveAttach(b)
+	if err != nil {
+		t.Fatalf("registered binding: unexpected err %v", err)
+	}
+	if got != scoped {
+		t.Errorf("expected per-binding attach")
+	}
+}
+
+// TestResolveAttach_FailsLoudOnCacheMiss mirrors the OS analogue.
+func TestResolveAttach_FailsLoudOnCacheMiss(t *testing.T) {
 	shared := newFakeAttach()
 	d := &Daemon{attach: shared, bindings: newBindingDepCache()}
 	b := VaultBinding{Key: VaultKey{"p", "v"}}
-	if got := d.resolveAttach(b); got != shared {
-		t.Fatal("empty cache: expected shared attach")
+	got, err := d.resolveAttach(b)
+	if err == nil {
+		t.Fatal("expected error on cache miss; got nil (silent fallback)")
 	}
-	scoped := newFakeAttach()
-	d.bindings.Set(b.Key, &bindingDeps{Attach: scoped})
-	if got := d.resolveAttach(b); got != scoped {
-		t.Errorf("expected per-binding attach")
+	if got != nil {
+		t.Errorf("expected nil AttachmentStore on error; got %v", got)
+	}
+	if !strings.Contains(err.Error(), "p/v") {
+		t.Errorf("err should mention binding key; got %q", err.Error())
 	}
 }
 

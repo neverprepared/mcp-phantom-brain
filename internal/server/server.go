@@ -58,6 +58,13 @@ type Daemon struct {
 	debouncer  *SnapshotDebouncer
 	bindings   *bindingDepCache
 
+	// allowSharedFallback is the explicit opt-in that lets resolveOS /
+	// resolveAttach return the shared d.osClient / d.attach when no
+	// per-binding view is registered. Production wiring leaves this
+	// false (any cache miss is a tenant-boundary leak); tests that
+	// build a Daemon by hand set it to keep the legacy paths working.
+	allowSharedFallback bool
+
 	parentCtx context.Context
 	parentCancel context.CancelFunc
 

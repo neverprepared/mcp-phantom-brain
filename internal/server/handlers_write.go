@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,27 +19,40 @@ import (
 )
 
 // resolveOS returns the per-binding osWriter view (v3.2 per-binding
-// storage overrides). Falls back to d.osClient when no per-binding
-// view is registered — preserves the legacy/test path where a Daemon
-// is wired by hand without going through buildBindingDeps.
-func (d *Daemon) resolveOS(b VaultBinding) osWriter {
+// storage overrides). On binding-cache miss returns an error rather
+// than silently falling back to the shared d.osClient — a cache miss
+// means buildBindingDeps never ran for this binding (configuration
+// error / SIGHUP race) and serving the shared infrastructure for a
+// binding that has its own [storage_overrides] would write to the
+// wrong tenant. Fail loud, log, return 500.
+//
+// The legacy test path that wires a Daemon by hand without
+// buildBindingDeps must call useSharedFallback to opt in explicitly.
+func (d *Daemon) resolveOS(b VaultBinding) (osWriter, error) {
 	if d.bindings != nil {
 		if deps, ok := d.bindings.Get(b.Key); ok && deps != nil && deps.OS != nil {
-			return deps.OS
+			return deps.OS, nil
 		}
 	}
-	return d.osClient
+	if d.allowSharedFallback {
+		return d.osClient, nil
+	}
+	return nil, fmt.Errorf("server: no binding view registered for %s — silent fallback to shared infra refused (would leak across tenants)", b.Key)
 }
 
 // resolveAttach returns the per-binding AttachmentStore (v3.2). Same
-// fallback semantics as resolveOS.
-func (d *Daemon) resolveAttach(b VaultBinding) AttachmentStore {
+// fail-loud semantics as resolveOS — a cache miss is a configuration
+// bug, not a thing to paper over with shared infrastructure.
+func (d *Daemon) resolveAttach(b VaultBinding) (AttachmentStore, error) {
 	if d.bindings != nil {
 		if deps, ok := d.bindings.Get(b.Key); ok && deps != nil && deps.Attach != nil {
-			return deps.Attach
+			return deps.Attach, nil
 		}
 	}
-	return d.attach
+	if d.allowSharedFallback {
+		return d.attach, nil
+	}
+	return nil, fmt.Errorf("server: no binding view registered for %s — silent fallback to shared infra refused (would leak across tenants)", b.Key)
 }
 
 // appendLogLine writes one newline-terminated record to the
@@ -256,7 +270,12 @@ func (d *Daemon) handlePerceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, _ := BindingFromContext(r.Context())
-	osc := d.resolveOS(binding)
+	osc, err := d.resolveOS(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
 
 	var req PerceiveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -309,7 +328,12 @@ func (d *Daemon) handleLearn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, _ := BindingFromContext(r.Context())
-	osc := d.resolveOS(binding)
+	osc, err := d.resolveOS(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
 
 	var req LearnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -371,8 +395,18 @@ func (d *Daemon) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, _ := BindingFromContext(r.Context())
-	osc := d.resolveOS(binding)
-	attach := d.resolveAttach(binding)
+	osc, err := d.resolveOS(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
+	attach, err := d.resolveAttach(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
 
 	var req AttachRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -550,8 +584,18 @@ func (d *Daemon) handleAttachGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, _ := BindingFromContext(r.Context())
-	osc := d.resolveOS(binding)
-	attach := d.resolveAttach(binding)
+	osc, err := d.resolveOS(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
+	attach, err := d.resolveAttach(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
 	sha := chi.URLParam(r, "sha")
 	if err := validateSHA(sha); err != nil {
 		WriteErrorEnvelope(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
@@ -596,8 +640,18 @@ func (d *Daemon) handleCaptureGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding, _ := BindingFromContext(r.Context())
-	osc := d.resolveOS(binding)
-	attach := d.resolveAttach(binding)
+	osc, err := d.resolveOS(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
+	attach, err := d.resolveAttach(binding)
+	if err != nil {
+		d.Logger.Error("phantom-brain: binding configuration error", slog.String("err", err.Error()))
+		WriteErrorEnvelope(w, http.StatusInternalServerError, ErrCodeStorageBackendErr, "binding configuration error", nil)
+		return
+	}
 	sha := chi.URLParam(r, "sha")
 	if err := validateSHA(sha); err != nil {
 		WriteErrorEnvelope(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
