@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.0](https://github.com/neverprepared/phantom-brain/compare/v3.2.0...v3.3.0) (2026-06-23)
+
+
+### Features
+
+* v3.3 operator CLI — bucket + binding subcommands ([#67](https://github.com/neverprepared/phantom-brain/issues/67)) ([45631fd](https://github.com/neverprepared/phantom-brain/commit/45631fd0fb2836543ddba2c8bf4de5deeba3390a))
+
 ## [3.2.0](https://github.com/neverprepared/phantom-brain/compare/v3.1.0...v3.2.0) (2026-06-23)
 
 
