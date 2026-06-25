@@ -591,6 +591,10 @@ func guessAttachmentMIME(ext string) string {
 		return "image/gif"
 	case ".webp":
 		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	case ".tiff", ".tif":
+		return "image/tiff"
 	case ".txt":
 		return "text/plain"
 	case ".md":
@@ -605,6 +609,14 @@ func guessAttachmentMIME(ext string) string {
 		return "application/msword"
 	case ".docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 	}
 	return "application/octet-stream"
 }
