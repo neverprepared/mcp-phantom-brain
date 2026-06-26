@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS fact_history;
+DROP TABLE IF EXISTS facts;
