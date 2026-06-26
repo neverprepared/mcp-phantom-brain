@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS records;
+DROP FUNCTION IF EXISTS set_updated_at();
