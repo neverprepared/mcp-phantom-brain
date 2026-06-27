@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.9.2](https://github.com/neverprepared/phantom-brain/compare/v3.9.1...v3.9.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* audit set C — resilience (durable synth, wqueue dead-letter, diff reload) ([#117](https://github.com/neverprepared/phantom-brain/issues/117)) ([ca8e3fc](https://github.com/neverprepared/phantom-brain/commit/ca8e3fc9a55ffa26f93570696639984820223ad8))
+
 ## [3.9.1](https://github.com/neverprepared/phantom-brain/compare/v3.9.0...v3.9.1) (2026-06-27)
 
 
