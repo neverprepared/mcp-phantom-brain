@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.11.0](https://github.com/neverprepared/phantom-brain/compare/v3.10.0...v3.11.0) (2026-07-01)
+
+
+### Features
+
+* **cli:** self-sufficient binding provisioning via `server profile create` ([#129](https://github.com/neverprepared/phantom-brain/issues/129)) ([d466aeb](https://github.com/neverprepared/phantom-brain/commit/d466aeb051087fd2738a31b1751ac2b7e6369fdf))
+* **docker:** add standalone Bifrost AI gateway compose stack ([#126](https://github.com/neverprepared/phantom-brain/issues/126)) ([c5b3ae7](https://github.com/neverprepared/phantom-brain/commit/c5b3ae7f22cd8a6b240ab6d875774a7d84d4a7fe))
+* **docker:** make Bifrost stack Ollama-first ([#128](https://github.com/neverprepared/phantom-brain/issues/128)) ([600e1a4](https://github.com/neverprepared/phantom-brain/commit/600e1a41b6f75e8be700d95582cabdf68cbc548a))
+
 ## [3.10.0](https://github.com/neverprepared/phantom-brain/compare/v3.9.2...v3.10.0) (2026-06-28)
 
 
